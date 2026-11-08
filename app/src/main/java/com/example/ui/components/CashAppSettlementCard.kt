@@ -104,7 +104,7 @@ fun CashAppSettlementCard(
           Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
               Text(
-                text = "Cash App Revenue Payout",
+                text = "Cash App Payment Requests",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
               )
@@ -117,7 +117,7 @@ fun CashAppSettlementCard(
               )
             }
             Text(
-              text = "Direct revenue deposit destination",
+              text = "Customers pay you via your Cash App link — payment is not automatic",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -184,7 +184,7 @@ fun CashAppSettlementCard(
             color = CashAppGreen
           ) {
             Text(
-              text = "ACTIVE",
+              text = "LINK ONLY",
               color = Color.White,
               fontSize = 11.sp,
               fontWeight = FontWeight.Bold,
@@ -193,6 +193,18 @@ fun CashAppSettlementCard(
           }
         }
       }
+
+      Spacer(modifier = Modifier.height(12.dp))
+
+      // Honest explainer: this card only shares a payment link. The app
+      // cannot send money to Cash App by itself, and no money moves
+      // automatically. A charge is only "paid" when Rans sees it in Cash
+      // App and marks it Paid on the Cash Flow screen.
+      Text(
+        text = "How payment works: log the service as a charge, share this Cash App link with the customer, and mark the charge Paid once you see the payment in Cash App. Nothing is sent automatically.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+      )
 
       Spacer(modifier = Modifier.height(12.dp))
 

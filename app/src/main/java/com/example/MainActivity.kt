@@ -1,10 +1,13 @@
 package com.example
 
+import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -26,6 +29,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RequestQuote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
@@ -76,14 +80,35 @@ import com.example.ui.theme.MyApplicationTheme
 import com.example.util.NotificationHelper
 
 class MainActivity : ComponentActivity() {
+  // Live-feed permissions: calls, texts and contacts on this phone only.
+  private val liveFeedPermissionLauncher = registerForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions()
+  ) { _ ->
+    // The ViewModel re-checks the real grant state after the prompt.
+  }
+
+  fun requestLiveFeedPermissions() {
+    liveFeedPermissionLauncher.launch(
+      arrayOf(
+        Manifest.permission.READ_CALL_LOG,
+        Manifest.permission.READ_SMS,
+        Manifest.permission.READ_CONTACTS
+      )
+    )
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
     NotificationHelper.createNotificationChannel(this)
+    // Ask once on first launch so the live feed can read this phone.
+    requestLiveFeedPermissions()
 
     setContent {
       MyApplicationTheme {
-        ContactPulseApp()
+        ContactPulseApp(
+          onRequestLiveFeedPermissions = { requestLiveFeedPermissions() }
+        )
       }
     }
   }
@@ -92,15 +117,29 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContactPulseApp(
-  viewModel: ContactPulseViewModel = viewModel()
+  viewModel: ContactPulseViewModel = viewModel(),
+  onRequestLiveFeedPermissions: () -> Unit = {}
 ) {
   val selectedTab by viewModel.selectedTab.collectAsState()
   val activeCellNumber by viewModel.activeCellNumber.collectAsState()
   val inAppAlert by viewModel.inAppAlert.collectAsState()
   val communications by viewModel.communications.collectAsState()
+  val liveFeedPermissionGranted by viewModel.liveFeedPermissionGranted.collectAsState()
+  val context = androidx.compose.ui.platform.LocalContext.current
+
+  // Re-check the permission state on launch, and import the live feed
+  // from this phone as soon as the permissions are granted.
+  LaunchedEffect(Unit) {
+    viewModel.checkLiveFeedPermissions(context.applicationContext)
+  }
+  LaunchedEffect(liveFeedPermissionGranted) {
+    if (liveFeedPermissionGranted) viewModel.refreshLiveFeed()
+  }
 
   val unreadMessagesCount = remember(communications) {
-    communications.count { it.type.startsWith("SMS") && !it.isRead }
+    communications.count {
+      (it.type.startsWith("SMS") || it.type.startsWith("MESSENGER")) && !it.isRead
+    }
   }
 
   // Dialog States
@@ -135,6 +174,21 @@ fun ContactPulseApp(
           }
         },
         actions = {
+          // Refresh the live feed from this phone; re-asks for the
+          // call/text/contact permissions if they were denied.
+          IconButton(
+            onClick = {
+              if (!liveFeedPermissionGranted) onRequestLiveFeedPermissions()
+              viewModel.refreshLiveFeed()
+            },
+            modifier = Modifier.testTag("top_bar_refresh_live_feed_button")
+          ) {
+            Icon(
+              imageVector = Icons.Default.Refresh,
+              contentDescription = "Refresh live feed from this phone",
+              tint = IndigoPrimary
+            )
+          }
           IconButton(
             onClick = { showToolWizardDialog = true },
             modifier = Modifier.testTag("top_bar_tool_wizard_button")

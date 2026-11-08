@@ -17,7 +17,7 @@ interface CommunicationDao {
   @Query("SELECT * FROM communications WHERE userCellNumber = :userCellNumber AND type LIKE 'CALL%' ORDER BY timestamp DESC")
   fun getCallsForUser(userCellNumber: String): Flow<List<CommunicationEntity>>
 
-  @Query("SELECT * FROM communications WHERE userCellNumber = :userCellNumber AND type LIKE 'SMS%' ORDER BY timestamp DESC")
+  @Query("SELECT * FROM communications WHERE userCellNumber = :userCellNumber AND (type LIKE 'SMS%' OR type LIKE 'MESSENGER%') ORDER BY timestamp DESC")
   fun getMessagesForUser(userCellNumber: String): Flow<List<CommunicationEntity>>
 
   @Query("SELECT * FROM communications WHERE userCellNumber = :userCellNumber AND isRead = 0")

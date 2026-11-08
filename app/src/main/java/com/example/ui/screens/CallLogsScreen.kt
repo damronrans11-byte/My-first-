@@ -113,10 +113,20 @@ fun CallLogsScreen(
           fontWeight = FontWeight.Bold
         )
         Text(
-          text = "Interactive call records with direct dial, SMS, and profit conversion",
+          text = "Real calls from this phone. Tap Refresh to re-import the live feed from this phone.",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+      }
+
+      // Refresh live feed from this phone
+      item {
+        Button(
+          onClick = { viewModel.refreshLiveFeed() },
+          modifier = Modifier.fillMaxWidth().testTag("refresh_live_feed_calls_button")
+        ) {
+          Text("Refresh live feed from this phone")
+        }
       }
 
       // Search Bar

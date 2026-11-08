@@ -10,6 +10,7 @@ import com.example.data.entity.CommunicationEntity
 import com.example.data.entity.ContactEntity
 import com.example.data.model.InteractionType
 import com.example.data.repository.ContactPulseRepository
+import com.example.data.source.DeviceCommunicationSource
 import com.example.service.CommunicationMonitoringService
 import com.example.util.NotificationHelper
 import kotlinx.coroutines.Job
@@ -103,6 +104,58 @@ class ContactPulseViewModel(application: Application) : AndroidViewModel(applica
   private val _searchQuery = MutableStateFlow("")
   val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+  // Live feed: whether this phone's call/text/contact permissions are granted.
+  // The feed only ever reads this phone; nothing is read from another phone.
+  private val _liveFeedPermissionGranted = MutableStateFlow(false)
+  val liveFeedPermissionGranted: StateFlow<Boolean> = _liveFeedPermissionGranted.asStateFlow()
+
+  fun checkLiveFeedPermissions(context: Context) {
+    _liveFeedPermissionGranted.value = DeviceCommunicationSource.hasPermissions(context)
+  }
+
+  /** Import real calls/texts for the current number from this phone. */
+  fun refreshLiveFeed() {
+    viewModelScope.launch {
+      val added = repository.syncNewDeviceEntries(getApplication(), _activeCellNumber.value)
+      if (added < 0) {
+        _liveFeedPermissionGranted.value = false
+        showInAppNotice("Allow Calls, SMS and Contacts permission to show the live feed from this phone.")
+      } else {
+        _liveFeedPermissionGranted.value = true
+        if (added > 0) showInAppNotice("Live feed updated: $added new call(s) / text(s) from this phone.")
+      }
+    }
+  }
+
+  /** Import real calls/texts for one customer number just entered. */
+  fun importLiveFeedForContact(contactNumber: String) {
+    viewModelScope.launch {
+      val added = repository.importDeviceHistory(
+        context = getApplication(),
+        userCellNumber = _activeCellNumber.value,
+        contactNumber = contactNumber
+      )
+      if (added < 0) {
+        _liveFeedPermissionGranted.value = false
+        showInAppNotice("Allow Calls, SMS and Contacts permission to show the live feed for $contactNumber.")
+      } else if (added > 0) {
+        showInAppNotice("Live feed for $contactNumber: $added call(s) / text(s) from this phone.")
+      } else {
+        showInAppNotice("No calls or texts from $contactNumber found on this phone yet.")
+      }
+    }
+  }
+
+  fun setCashFlowPaymentStatus(flow: CashFlowEntity, status: String) {
+    viewModelScope.launch {
+      repository.setCashFlowPaymentStatus(flow, status)
+      showInAppNotice(
+        if (status == "PAID") "Marked paid — payment seen in Cash App."
+        else "Marked pending — still waiting for the Cash App payment."
+      )
+    }
+  }
+
   // Real-time background monitoring service state
   val isMonitoringServiceRunning: StateFlow<Boolean> = CommunicationMonitoringService.isServiceRunning
   val monitoredEventsCount: StateFlow<Int> = CommunicationMonitoringService.monitoredEventsCount
@@ -157,25 +210,26 @@ class ContactPulseViewModel(application: Application) : AndroidViewModel(applica
     val cutoff = if (range == TimeRange.ALL_TIME) 0L else System.currentTimeMillis() - (range.days * 24L * 3600 * 1000)
     val filteredComms = commsList.filter { it.timestamp >= cutoff }
 
-    val contactMap = contactList.associateBy { it.phoneNumber }
+    val contactMap = contactList.associateBy { DeviceCommunicationSource.normalizeNumber(it.phoneNumber) }
 
-    val groupedByNumber = filteredComms.groupBy { it.contactNumber }
+    val groupedByNumber = filteredComms.groupBy { DeviceCommunicationSource.normalizeNumber(it.contactNumber) }
 
     val results = mutableListOf<ContactFrequencyMetric>()
 
-    groupedByNumber.forEach { (number, items) ->
-      val contact = contactMap[number]
-      val name = contact?.name ?: items.firstOrNull()?.contactName ?: number
+    groupedByNumber.forEach { (normalizedNumber, items) ->
+      val contact = contactMap[normalizedNumber]
+      val displayNumber = items.firstOrNull()?.contactNumber ?: normalizedNumber
+      val name = contact?.name ?: items.firstOrNull()?.contactName ?: displayNumber
       val color = contact?.avatarColorHex ?: 0xFF6366F1
       val calls = items.count { it.type.startsWith("CALL") }
-      val msgs = items.count { it.type.startsWith("SMS") }
+      val msgs = items.count { it.type.startsWith("SMS") || it.type.startsWith("MESSENGER") }
       val billableRev = items.filter { it.isBillable }.sumOf { it.billedAmount }
       val lastTime = items.maxOfOrNull { it.timestamp } ?: 0L
 
       results.add(
         ContactFrequencyMetric(
           contactName = name,
-          phoneNumber = number,
+          phoneNumber = displayNumber,
           totalInteractions = items.size,
           callsCount = calls,
           messagesCount = msgs,
@@ -188,7 +242,7 @@ class ContactPulseViewModel(application: Application) : AndroidViewModel(applica
 
     // Add any contacts with 0 interactions in period
     contactList.forEach { c ->
-      if (results.none { it.phoneNumber == c.phoneNumber }) {
+      if (results.none { DeviceCommunicationSource.normalizeNumber(it.phoneNumber) == DeviceCommunicationSource.normalizeNumber(c.phoneNumber) }) {
         results.add(
           ContactFrequencyMetric(
             contactName = c.name,
@@ -265,14 +319,22 @@ class ContactPulseViewModel(application: Application) : AndroidViewModel(applica
   }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
   init {
-    // Seed initial data if newly registered cell number
+    // No fake sample data on first launch. The live feed imports real calls
+    // and texts from this phone once the permissions are granted; sample
+    // data is opt-in only, from Settings.
     viewModelScope.launch {
-      repository.seedInitialDataIfEmpty(_activeCellNumber.value)
+      refreshLiveFeed()
     }
   }
 
   fun setTab(tab: AppTab) {
     _selectedTab.value = tab
+    // Opening Calls or Messages re-syncs the live feed from this phone.
+    if (tab == AppTab.CALLS || tab == AppTab.MESSAGES) {
+      viewModelScope.launch {
+        repository.syncNewDeviceEntries(getApplication(), _activeCellNumber.value)
+      }
+    }
   }
 
   fun setTimeRange(range: TimeRange) {
@@ -300,10 +362,21 @@ class ContactPulseViewModel(application: Application) : AndroidViewModel(applica
     if (clean.isNotEmpty()) {
       _activeCellNumber.value = clean
       prefs.edit().putString("saved_cell_number", clean).apply()
+      // Import this phone's real calls and texts into this number's log
+      // instead of filling the log with fake sample contacts. No contact
+      // filter here: the saved cell number is Rans's own number, and the
+      // calls/texts on this phone are the log for it.
       viewModelScope.launch {
-        repository.seedInitialDataIfEmpty(clean)
+        val added = repository.importDeviceHistory(getApplication(), clean)
+        if (added < 0) {
+          _liveFeedPermissionGranted.value = false
+          showInAppNotice("Number updated to $clean. Allow Calls, SMS and Contacts permission to show its live feed from this phone.")
+        } else if (added > 0) {
+          showInAppNotice("Number updated to $clean. Live feed: $added call(s) / text(s) from this phone.")
+        } else {
+          showInAppNotice("Number updated to $clean. No calls or texts for it found on this phone yet.")
+        }
       }
-      showInAppNotice("Connected cell number updated to $clean")
     }
   }
 
@@ -372,7 +445,7 @@ class ContactPulseViewModel(application: Application) : AndroidViewModel(applica
   fun seedSampleData() {
     viewModelScope.launch {
       repository.seedInitialDataIfEmpty(_activeCellNumber.value)
-      showInAppNotice("Administrator refresh: Telemetry loaded")
+      showInAppNotice("Demo sample data loaded — this is not real calls or texts from your phone.")
     }
   }
 
@@ -500,7 +573,7 @@ class ContactPulseViewModel(application: Application) : AndroidViewModel(applica
   fun convertCallToBillable(comm: CommunicationEntity, rate: Double) {
     viewModelScope.launch {
       repository.convertCallToBillableProfit(comm, rate)
-      showInAppNotice("Converted call to billable profit revenue!")
+      showInAppNotice("Converted call to billable charge. Request payment in Cash App from the Cash Flow screen, then mark it Paid.")
     }
   }
 

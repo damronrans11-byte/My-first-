@@ -12,7 +12,6 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.data.AppDatabase
-import com.example.data.entity.CommunicationEntity
 import com.example.data.model.InteractionType
 import com.example.util.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
@@ -58,83 +57,51 @@ class CommunicationMonitoringService : Service() {
     monitorJob = serviceScope.launch {
       val prefs = getSharedPreferences("contact_pulse_prefs", Context.MODE_PRIVATE)
       val database = AppDatabase.getDatabase(applicationContext)
+      val repository = com.example.data.repository.ContactPulseRepository(database)
 
-      val incomingFeed = listOf(
-        Triple("Sophia Vance (VIP Client)", "+1 (555) 329-8472", "Client approved the secondary service contract! Let's get started."),
-        Triple("David Miller (Apex Systems)", "+1 (555) 741-9238", "Call me when you're free, quick question on our milestone payment."),
-        Triple("Elena Rostova (FinTech)", "+1 (555) 892-1054", "New lead inquiry: Could you send over the secondary services estimate?"),
-        Triple("Marcus Chen (Partner)", "+1 (555) 438-6621", "Referral just came in from the conference webinar!"),
-        Triple("Alex Rivera (Facebook Messenger)", "+1 (555) 604-3389", "Saw your post on Messenger and need a consulting quote.")
-      )
-
-      var index = 0
+      // Live feed: re-read this phone's real calls and texts every 30 seconds
+      // and log only entries that are genuinely new. There is no fake feed
+      // any more. Messenger cannot be read from Android, so Messenger chats
+      // are logged manually in the app and are not faked here.
+      var lastSeenTimestamp = System.currentTimeMillis()
       while (isActive) {
         // Poll and monitor every 30 seconds
         delay(30000)
         val activeCellNumber = prefs.getString("saved_cell_number", "+1 (555) 234-8901") ?: "+1 (555) 234-8901"
-        val item = incomingFeed[index % incomingFeed.size]
-        index++
-
-        val isMessenger = item.first.contains("Messenger")
-        val isCall = index % 3 == 0
-
-        if (isCall) {
-          val comm = CommunicationEntity(
-            userCellNumber = activeCellNumber,
-            contactName = item.first,
-            contactNumber = item.second,
-            type = InteractionType.CALL_INCOMING.name,
-            messageBody = "Incoming Client Call (Monitored in Background)",
-            callDurationSeconds = 120,
-            timestamp = System.currentTimeMillis(),
-            isRead = true
-          )
-          database.communicationDao().insert(comm)
-          NotificationHelper.notifyIncomingCall(
-            context = applicationContext,
-            callerName = item.first,
-            callerNumber = item.second,
-            isMissed = false
-          )
-        } else if (isMessenger) {
-          val comm = CommunicationEntity(
-            userCellNumber = activeCellNumber,
-            contactName = item.first,
-            contactNumber = "Messenger: ${item.first}",
-            type = InteractionType.MESSENGER_INCOMING.name,
-            messageBody = item.third,
-            callDurationSeconds = 0,
-            timestamp = System.currentTimeMillis(),
-            isRead = false
-          )
-          database.communicationDao().insert(comm)
-          NotificationHelper.notifyFacebookMessenger(
-            context = applicationContext,
-            senderName = item.first,
-            messageBody = item.third
-          )
-        } else {
-          val comm = CommunicationEntity(
-            userCellNumber = activeCellNumber,
-            contactName = item.first,
-            contactNumber = item.second,
-            type = InteractionType.SMS_INCOMING.name,
-            messageBody = item.third,
-            callDurationSeconds = 0,
-            timestamp = System.currentTimeMillis(),
-            isRead = false
-          )
-          database.communicationDao().insert(comm)
-          NotificationHelper.notifyIncomingMessage(
-            context = applicationContext,
-            senderName = item.first,
-            senderNumber = item.second,
-            messageBody = item.third
-          )
+        val added = repository.syncNewDeviceEntries(applicationContext, activeCellNumber)
+        if (added < 0) continue
+        if (added > 0) {
+          val fresh = try {
+            kotlinx.coroutines.flow.firstOrNull(
+              database.communicationDao().getAllForUser(activeCellNumber)
+            )
+              ?.filter { it.timestamp >= lastSeenTimestamp }
+              ?.sortedByDescending { it.timestamp }
+              ?.take(added)
+              .orEmpty()
+          } catch (e: Exception) {
+            emptyList()
+          }
+          for (comm in fresh) {
+            when {
+              comm.type.startsWith("CALL") -> NotificationHelper.notifyIncomingCall(
+                context = applicationContext,
+                callerName = comm.contactName,
+                callerNumber = comm.contactNumber,
+                isMissed = comm.type == InteractionType.CALL_MISSED.name
+              )
+              comm.type.startsWith("SMS") -> NotificationHelper.notifyIncomingMessage(
+                context = applicationContext,
+                senderName = comm.contactName,
+                senderNumber = comm.contactNumber,
+                messageBody = comm.messageBody
+              )
+            }
+            _monitoredEventsCount.value += 1
+            _alertsTriggeredCount.value += 1
+          }
+          lastSeenTimestamp = System.currentTimeMillis()
         }
-
-        _monitoredEventsCount.value += 1
-        _alertsTriggeredCount.value += 1
       }
     }
   }
@@ -191,7 +158,7 @@ class CommunicationMonitoringService : Service() {
     return NotificationCompat.Builder(this, SERVICE_CHANNEL_ID)
       .setSmallIcon(android.R.drawable.stat_notify_sync)
       .setContentTitle("I Spy Live Monitor Active")
-      .setContentText("Monitoring incoming calls, SMS messages, and Messenger in real time")
+      .setContentText("Monitoring incoming calls and SMS texts on this phone in real time")
       .setOngoing(true)
       .setContentIntent(pendingOpen)
       .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Monitoring", pendingStop)
@@ -211,10 +178,10 @@ class CommunicationMonitoringService : Service() {
     private val _serviceStartTime = MutableStateFlow(0L)
     val serviceStartTime: StateFlow<Long> = _serviceStartTime.asStateFlow()
 
-    private val _monitoredEventsCount = MutableStateFlow(14)
+    private val _monitoredEventsCount = MutableStateFlow(0)
     val monitoredEventsCount: StateFlow<Int> = _monitoredEventsCount.asStateFlow()
 
-    private val _alertsTriggeredCount = MutableStateFlow(14)
+    private val _alertsTriggeredCount = MutableStateFlow(0)
     val alertsTriggeredCount: StateFlow<Int> = _alertsTriggeredCount.asStateFlow()
 
     fun start(context: Context) {

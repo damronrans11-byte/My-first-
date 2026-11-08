@@ -34,7 +34,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -445,7 +449,14 @@ fun CashFlowScreen(
         items(filteredFlows, key = { it.id }) { item ->
           CashFlowItemCard(
             item = item,
-            onDelete = { viewModel.deleteCashFlow(item) }
+            cashAppTag = cashAppTag,
+            onDelete = { viewModel.deleteCashFlow(item) },
+            onTogglePaid = {
+              viewModel.setCashFlowPaymentStatus(
+                item,
+                if (item.paymentStatus == "PAID") "PENDING" else "PAID"
+              )
+            }
           )
         }
       }
@@ -473,12 +484,20 @@ fun CashFlowScreen(
 @Composable
 fun CashFlowItemCard(
   item: CashFlowEntity,
-  onDelete: () -> Unit
+  cashAppTag: String,
+  onDelete: () -> Unit,
+  onTogglePaid: () -> Unit
 ) {
+  val context = LocalContext.current
   val isIncome = item.type == "INCOME"
+  val isPaid = item.paymentStatus == "PAID"
   val dateFormatted = remember(item.timestamp) {
     SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(item.timestamp))
   }
+  // Cash App payment link for this charge. Opening it only shows the
+  // customer Rans's Cash App page — it does not send any money by itself.
+  val cleanTag = cashAppTag.trim().removePrefix("$")
+  val cashAppLink = "https://cash.app/$$cleanTag"
 
   Card(
     modifier = Modifier.fillMaxWidth(),
@@ -487,64 +506,129 @@ fun CashFlowItemCard(
       containerColor = MaterialTheme.colorScheme.surface
     )
   ) {
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(14.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween
-    ) {
+    Column(modifier = Modifier.padding(14.dp)) {
       Row(
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.weight(1f)
+        horizontalArrangement = Arrangement.SpaceBetween
       ) {
-        Box(
-          modifier = Modifier
-            .size(38.dp)
-            .clip(CircleShape)
-            .background(if (isIncome) EmeraldProfit.copy(alpha = 0.15f) else RoseExpense.copy(alpha = 0.15f)),
-          contentAlignment = Alignment.Center
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          modifier = Modifier.weight(1f)
         ) {
-          Icon(
-            imageVector = if (isIncome) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
-            contentDescription = null,
-            tint = if (isIncome) EmeraldProfit else RoseExpense,
-            modifier = Modifier.size(18.dp)
-          )
+          Box(
+            modifier = Modifier
+              .size(38.dp)
+              .clip(CircleShape)
+              .background(if (isIncome) EmeraldProfit.copy(alpha = 0.15f) else RoseExpense.copy(alpha = 0.15f)),
+            contentAlignment = Alignment.Center
+          ) {
+            Icon(
+              imageVector = if (isIncome) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
+              contentDescription = null,
+              tint = if (isIncome) EmeraldProfit else RoseExpense,
+              modifier = Modifier.size(18.dp)
+            )
+          }
+
+          Spacer(modifier = Modifier.width(12.dp))
+
+          Column {
+            Text(
+              text = item.title,
+              style = MaterialTheme.typography.bodyMedium,
+              fontWeight = FontWeight.SemiBold
+            )
+            Text(
+              text = "${item.category} · $dateFormatted",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (!item.relatedContactName.isNullOrBlank()) {
+              Text(
+                text = "Contact: ${item.relatedContactName}",
+                style = MaterialTheme.typography.labelSmall,
+                color = IndigoPrimary
+              )
+            }
+          }
         }
 
-        Spacer(modifier = Modifier.width(12.dp))
-
-        Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
           Text(
-            text = item.title,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold
+            text = if (isIncome) "+$${"%,.2f".format(item.amount)}" else "-$${"%,.2f".format(item.amount)}",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = if (isIncome) EmeraldProfit else RoseExpense
           )
-          Text(
-            text = "${item.category} · $dateFormatted",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-          )
-          if (!item.relatedContactName.isNullOrBlank()) {
-            Text(
-              text = "Contact: ${item.relatedContactName}",
-              style = MaterialTheme.typography.labelSmall,
-              color = IndigoPrimary
-            )
+          IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
           }
         }
       }
 
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-          text = if (isIncome) "+$${"%,.2f".format(item.amount)}" else "-$${"%,.2f".format(item.amount)}",
-          style = MaterialTheme.typography.titleMedium,
-          fontWeight = FontWeight.Bold,
-          color = if (isIncome) EmeraldProfit else RoseExpense
-        )
-        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-          Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+      // Cash App payment status and actions — income charges only.
+      // Nothing is sent automatically: "Request in Cash App" opens the
+      // Cash App link for the customer to pay, and Rans marks the charge
+      // Paid by hand once the payment is seen in Cash App.
+      if (isIncome) {
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = if (isPaid) EmeraldProfit.copy(alpha = 0.15f) else Color(0xFFF59E0B).copy(alpha = 0.15f)
+          ) {
+            Text(
+              text = if (isPaid) "PAID" else "PENDING",
+              style = MaterialTheme.typography.labelSmall,
+              fontWeight = FontWeight.Bold,
+              color = if (isPaid) EmeraldProfit else Color(0xFF92400E),
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+          }
+          TextButton(onClick = onTogglePaid) {
+            Text(if (isPaid) "Mark Pending" else "Mark Paid", fontSize = 12.sp)
+          }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          OutlinedButton(
+            onClick = {
+              try {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(cashAppLink)))
+              } catch (e: Exception) {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://cash.app")))
+              }
+            },
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.weight(1f).testTag("request_cash_app_${item.id}")
+          ) {
+            Text("Request in Cash App", fontSize = 12.sp)
+          }
+          OutlinedButton(
+            onClick = {
+              val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(
+                  Intent.EXTRA_TEXT,
+                  "Payment request: ${item.title} — $${"%.2f".format(item.amount)}. " +
+                    "Please pay via Cash App: $cashAppLink"
+                )
+              }
+              context.startActivity(Intent.createChooser(shareIntent, "Share payment request"))
+            },
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.weight(1f).testTag("share_cash_app_request_${item.id}")
+          ) {
+            Text("Share request", fontSize = 12.sp)
+          }
         }
       }
     }

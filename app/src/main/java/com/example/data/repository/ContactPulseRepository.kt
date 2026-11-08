@@ -6,6 +6,7 @@ import com.example.data.entity.CashFlowEntity
 import com.example.data.entity.CommunicationEntity
 import com.example.data.entity.ContactEntity
 import com.example.data.model.InteractionType
+import com.example.data.source.DeviceCommunicationSource
 import com.example.util.NotificationHelper
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
@@ -29,6 +30,78 @@ class ContactPulseRepository(private val database: AppDatabase) {
 
   suspend fun insertContact(contact: ContactEntity): Long =
     database.contactDao().insert(contact)
+
+  /** Key used to dedupe device entries against what is already logged. */
+  private fun dedupeKey(comm: CommunicationEntity): String =
+    "${comm.timestamp}|${DeviceCommunicationSource.normalizeNumber(comm.contactNumber)}" +
+      "|${comm.type}|${comm.messageBody}|${comm.callDurationSeconds}"
+
+  /**
+   * Import real calls and texts from this phone into the log for
+   * [userCellNumber]. When [contactNumber] is given, only that customer's
+   * entries are imported — this is what runs when a new number is entered.
+   * Returns how many genuinely new rows were added, or -1 when the
+   * call/text/contact permissions have not been granted.
+   */
+  suspend fun importDeviceHistory(
+    context: Context,
+    userCellNumber: String,
+    contactNumber: String? = null
+  ): Int {
+    val result = DeviceCommunicationSource.readDeviceHistory(context, userCellNumber, contactNumber)
+    if (result is DeviceCommunicationSource.ImportResult.PermissionMissing) return -1
+    val entries = (result as DeviceCommunicationSource.ImportResult.Imported).entries
+    return insertNewDeviceEntries(userCellNumber, entries)
+  }
+
+  /**
+   * Re-read this phone's calls and texts and insert only entries that are
+   * not already in the log. Returns how many new rows were added, or -1
+   * when permissions are missing. Used by the background service and by
+   * opening the Calls / Messages screens.
+   */
+  suspend fun syncNewDeviceEntries(context: Context, userCellNumber: String): Int =
+    importDeviceHistory(context, userCellNumber, contactNumber = null)
+
+  private suspend fun insertNewDeviceEntries(
+    userCellNumber: String,
+    entries: List<CommunicationEntity>
+  ): Int {
+    if (entries.isEmpty()) return 0
+    val existing = database.communicationDao().getAllForUser(userCellNumber).firstOrNull().orEmpty()
+    val seen = existing.map { dedupeKey(it) }.toHashSet()
+    var added = 0
+    for (entry in entries) {
+      if (!seen.add(dedupeKey(entry))) continue
+      // Make sure the number shows up in the customer list, even if it was
+      // never added as a contact by hand.
+      val normalized = DeviceCommunicationSource.normalizeNumber(entry.contactNumber)
+      val alreadyContact = database.contactDao().getContactsForUser(userCellNumber)
+        .firstOrNull().orEmpty()
+        .any { DeviceCommunicationSource.normalizeNumber(it.phoneNumber) == normalized }
+      if (!alreadyContact) {
+        database.contactDao().insert(
+          ContactEntity(
+            userCellNumber = userCellNumber,
+            name = entry.contactName,
+            phoneNumber = entry.contactNumber,
+            company = "",
+            category = "Client",
+            hourlyRate = 0.0,
+            avatarColorHex = 0xFF6366F1
+          )
+        )
+      }
+      database.communicationDao().insert(entry)
+      added++
+    }
+    return added
+  }
+
+  /** Mark a charge PAID (money seen in Cash App) or back to PENDING, by hand. */
+  suspend fun setCashFlowPaymentStatus(cashFlow: CashFlowEntity, status: String) {
+    database.cashFlowDao().update(cashFlow.copy(paymentStatus = status))
+  }
 
   suspend fun insertCommunication(communication: CommunicationEntity): Long =
     database.communicationDao().insert(communication)

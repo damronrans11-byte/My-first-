@@ -14,5 +14,8 @@ data class CashFlowEntity(
   val category: String, // e.g. "Client Call Billing", "Closed Deal from SMS", "Retainer", "Phone & Telecom", "Contractor", "Software"
   val relatedContactName: String? = null,
   val timestamp: Long = System.currentTimeMillis(),
-  val notes: String = ""
+  val notes: String = "",
+  /** Payment status for a charge: PENDING until Rans sees the payment in Cash App
+      and marks it PAID by hand. Cash App payment is never automatic. */
+  val paymentStatus: String = "PENDING"
 )

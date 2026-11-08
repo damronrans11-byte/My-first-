@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -116,7 +117,7 @@ fun MessagesScreen(
               fontWeight = FontWeight.Bold
             )
             Text(
-              text = "Text history with real-time alert triggers and quick reply",
+              text = "Real texts from this phone. Messenger has no live Android feed — log Messenger chats manually with the + button.",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -148,6 +149,16 @@ fun MessagesScreen(
               }
             }
           }
+        }
+      }
+
+      // Refresh live feed from this phone
+      item {
+        Button(
+          onClick = { viewModel.refreshLiveFeed() },
+          modifier = Modifier.fillMaxWidth().testTag("refresh_live_feed_messages_button")
+        ) {
+          Text("Refresh live feed from this phone")
         }
       }
 

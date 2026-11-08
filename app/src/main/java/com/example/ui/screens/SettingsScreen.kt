@@ -134,7 +134,7 @@ fun SettingsScreen(
       )
     }
 
-    // Cash App Revenue Payout Settings
+    // Cash App Payment Requests — link only, no auto-send (see CashAppSettlementCard)
     item {
       CashAppSettlementCard(
         cashAppTag = cashAppTag,
