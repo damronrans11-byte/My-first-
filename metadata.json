@@ -1,0 +1,6 @@
+{
+  "name": "I Spy",
+  "description": "Visualizes contact interaction frequency with interactive charts, tracks call logs and messages, delivers real-time incoming alerts, generates cash flow profit, and downloads secondary service estimates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
